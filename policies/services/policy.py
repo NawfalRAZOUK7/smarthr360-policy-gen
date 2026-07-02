@@ -219,11 +219,11 @@ class DemoDataService:
         
         # Create Departments
         dept_it = Department.objects.create(name="IT", code="IT")
-        dept_hr = Department.objects.create(name="HR", code="HR")
+        Department.objects.create(name="HR", code="HR")
         
         # Create Job Titles
         title_dev = JobTitle.objects.create(name="Developer", level=2)
-        title_mgr = JobTitle.objects.create(name="Manager", level=4)
+        JobTitle.objects.create(name="Manager", level=4)
         
         # Create Employees (Active)
         for i in range(20):

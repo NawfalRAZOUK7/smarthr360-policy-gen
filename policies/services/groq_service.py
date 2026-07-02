@@ -156,7 +156,7 @@ class GroqService:
                         import re
                         numbers = re.findall(r'\d+(?:,\d+)*', budget_str.replace(',', ''))
                         rec["estimated_cost_mad"] = int(numbers[0]) if numbers else 0
-                    except:
+                    except (ValueError, IndexError):
                         rec["estimated_cost_mad"] = 0
             
             # Sort by cost (lowest to highest) to ensure budget priority
