@@ -19,3 +19,6 @@ python-dotenv>=1.0
 
 # Sibling service calls
 requests>=2.31
+
+# Observability
+django-prometheus>=2.3
