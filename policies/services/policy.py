@@ -32,13 +32,20 @@ class HRAnalyticsService:
 
 class PolicySimulatorService:
     @staticmethod
-    def simulate_policy_impact(policy_type, magnitude):
+    def simulate_policy_impact(policy_type, magnitude, current_stats=None, headcount=None):
+        """Predict a policy's impact.
+
+        `current_stats` / `headcount` may come from the local analytical
+        store (default) or from LIVE core-hr aggregates (cross-service
+        wiring) — the prediction logic is identical either way.
+        """
         # 1. Try Groq Prediction
-        current_stats = {
-            "turnover": HRAnalyticsService.get_turnover_rate(),
-            "performance": HRAnalyticsService.get_average_performance()
-        }
-        
+        if current_stats is None:
+            current_stats = {
+                "turnover": HRAnalyticsService.get_turnover_rate(),
+                "performance": HRAnalyticsService.get_average_performance()
+            }
+
         prediction = GroqService.predict_impact(current_stats, policy_type, magnitude)
         if prediction:
             # FORCE ZERO COST for specific policies
@@ -68,7 +75,9 @@ class PolicySimulatorService:
         
         turnover_change = factors['turnover'] * magnitude
         performance_change = factors['performance'] * (magnitude / 10) # Scale down perf impact
-        cost_estimate = factors['cost'] * magnitude * Employe.objects.filter(status='active').count()
+        if headcount is None:
+            headcount = Employe.objects.filter(status='active').count()
+        cost_estimate = factors['cost'] * magnitude * headcount
         
         # Ensure zero cost for specific policies in fallback logic too
         if policy_type in ['flexible_hours', 'mentorship']:

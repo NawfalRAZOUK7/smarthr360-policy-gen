@@ -16,3 +16,6 @@ smarthr360-jwt-auth @ git+https://github.com/NawfalRAZOUK7/smarthr360.git#subdir
 # LLM recommendations (optional: static fallback without it)
 groq>=0.9
 python-dotenv>=1.0
+
+# Sibling service calls
+requests>=2.31

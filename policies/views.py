@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 
 from smarthr360_jwt_auth.access import has_hr_access
 
+from .clients import CoreHRClient, ServiceError
 from .services.policy import (
     DemoDataService,
     HRAnalyticsService,
@@ -35,14 +36,39 @@ def _require_hr(request):
 
 
 class AnalyticsView(APIView):
-    """GET /api/policy/analytics/ — current social indicators."""
+    """GET /api/policy/analytics/ — current social indicators.
+
+    `?source=live` computes the indicators from LIVE core-hr data
+    (token pass-through) instead of the local analytical store.
+    """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         _require_hr(request)
+
+        if request.query_params.get("source") == "live":
+            try:
+                live = CoreHRClient(request.auth).get_live_stats()
+            except ServiceError as exc:
+                return Response(
+                    {"detail": f"core-hr unavailable: {exc}"},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+            return Response(
+                {
+                    "source": live["source"],
+                    "turnover_rate": live["turnover"],
+                    "avg_performance": live["performance"],
+                    "headcount": live["headcount"],
+                    "active": live["active"],
+                    "reviews_counted": live["reviews_counted"],
+                }
+            )
+
         return Response(
             {
+                "source": "local analytical store",
                 "turnover_rate": round(HRAnalyticsService.get_turnover_rate(), 1),
                 "avg_performance": round(
                     float(HRAnalyticsService.get_average_performance()), 2
@@ -78,9 +104,34 @@ class SimulateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        impact = PolicySimulatorService.simulate_policy_impact(policy_type, magnitude)
+        # optional cross-service mode: evaluate against LIVE core-hr data
+        current_stats, headcount, source = None, None, "local analytical store"
+        if request.data.get("use_live"):
+            try:
+                live = CoreHRClient(request.auth).get_live_stats()
+            except ServiceError as exc:
+                return Response(
+                    {"detail": f"core-hr unavailable: {exc}"},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+            current_stats = {
+                "turnover": live["turnover"],
+                "performance": live["performance"],
+            }
+            headcount = live["headcount"]
+            source = live["source"]
+
+        impact = PolicySimulatorService.simulate_policy_impact(
+            policy_type, magnitude,
+            current_stats=current_stats, headcount=headcount,
+        )
         return Response(
-            {"policy_type": policy_type, "magnitude": magnitude, "impact": impact}
+            {
+                "policy_type": policy_type,
+                "magnitude": magnitude,
+                "impact": impact,
+                "data_source": source,
+            }
         )
 
 

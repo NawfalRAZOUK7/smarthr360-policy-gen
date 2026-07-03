@@ -5,6 +5,7 @@ static prediction/recommendation logic.
 """
 
 import time
+from unittest import mock
 
 import jwt
 from cryptography.hazmat.primitives import serialization
@@ -144,3 +145,67 @@ class PolicyGenTests(TestCase):
         self.assertEqual(
             self.client.get("/api/policy/analytics/").status_code, 401
         )
+
+
+LIVE_STATS = {
+    "source": "smarthr360-core-hr (live)",
+    "headcount": 40, "active": 36, "turnover": 10.0,
+    "performance": 3.4, "reviews_counted": 25,
+}
+
+
+class LiveWiringTests(PolicyGenTests.__bases__[0]):
+    """Cross-service wiring: analytics/simulation over LIVE core-hr data."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._s2 = override_settings(
+            SMARTHR_JWT_AUTH={"PUBLIC_KEY": PUBLIC_PEM, "ISSUER": "smarthr360"}
+        )
+        cls._s2.enable()
+        conf.clear_cache()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._s2.disable()
+        conf.clear_cache()
+        super().tearDownClass()
+
+    @mock.patch("policies.views.CoreHRClient")
+    def test_live_analytics(self, MockHR):
+        MockHR.return_value.get_live_stats.return_value = LIVE_STATS
+        resp = self.client.get("/api/policy/analytics/?source=live", **bearer())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(body["headcount"], 40)
+        self.assertEqual(body["turnover_rate"], 10.0)
+        self.assertIn("live", body["source"])
+
+    @mock.patch("policies.views.CoreHRClient")
+    def test_live_simulation_scales_cost_by_live_headcount(self, MockHR):
+        MockHR.return_value.get_live_stats.return_value = LIVE_STATS
+        resp = self.client.post(
+            "/api/policy/simulate/",
+            {"policy_type": "remote_work", "magnitude": 5, "use_live": True},
+            content_type="application/json",
+            **bearer(),
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertIn("live", body["data_source"])
+        # static fallback: 3000 * 5 * 40 live headcount
+        self.assertEqual(body["impact"]["cost_estimate"], 3000 * 5 * 40)
+
+    @mock.patch("policies.views.CoreHRClient")
+    def test_core_hr_down_yields_502(self, MockHR):
+        from policies.clients import ServiceError
+
+        MockHR.return_value.get_live_stats.side_effect = ServiceError("boom")
+        resp = self.client.get("/api/policy/analytics/?source=live", **bearer())
+        self.assertEqual(resp.status_code, 502)
+
+    def test_local_mode_unchanged(self):
+        resp = self.client.get("/api/policy/analytics/", **bearer())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["source"], "local analytical store")
