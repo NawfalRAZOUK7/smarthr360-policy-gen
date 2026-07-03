@@ -125,8 +125,23 @@ class SimulateView(APIView):
             policy_type, magnitude,
             current_stats=current_stats, headcount=headcount,
         )
+
+        # persist for later comparison (uses the rescued SimulationRun)
+        from .models import SimulationRun
+
+        run = SimulationRun.objects.create(
+            scenario={
+                "policy_type": policy_type,
+                "magnitude": magnitude,
+                "data_source": source,
+                "requested_by_user_id": request.user.id,
+            },
+            result=impact,
+        )
+
         return Response(
             {
+                "simulation_id": str(run.id),
                 "policy_type": policy_type,
                 "magnitude": magnitude,
                 "impact": impact,
@@ -177,3 +192,92 @@ class ResetDemoDataView(APIView):
         _require_hr(request)
         DemoDataService.reset_and_populate()
         return Response({"detail": "Demo data reset."}, status=status.HTTP_201_CREATED)
+
+
+class SimulationHistoryView(APIView):
+    """GET /api/policy/simulations/ — recent persisted simulations (HR).
+
+    Lets HR compare scenarios side by side instead of re-running them.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        _require_hr(request)
+        from .models import SimulationRun
+
+        runs = SimulationRun.objects.order_by("-created_at")[:25]
+        return Response(
+            {
+                "count": len(runs),
+                "simulations": [
+                    {
+                        "id": str(run.id),
+                        "created_at": run.created_at.isoformat(),
+                        "scenario": run.scenario,
+                        "result": run.result,
+                    }
+                    for run in runs
+                ],
+            }
+        )
+
+
+class OptimizePortfolioView(APIView):
+    """POST /api/policy/optimize/ {budget, magnitude?, policies?, use_live?}
+
+    Returns the best affordable mix of policies (greedy knapsack over
+    the impact model) with per-policy selection reasons.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        _require_hr(request)
+        try:
+            budget = float(request.data.get("budget", 0))
+        except (TypeError, ValueError):
+            budget = -1
+        if budget < 0:
+            return Response(
+                {"detail": "budget must be a non-negative number."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            magnitude = float(request.data.get("magnitude", 5))
+        except (TypeError, ValueError):
+            magnitude = 5
+        if not 0 <= magnitude <= 10:
+            return Response(
+                {"detail": "magnitude must be between 0 and 10."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        candidates = request.data.get("policies") or None
+        if candidates and not set(candidates).issubset(POLICY_TYPES):
+            return Response(
+                {"detail": f"policies must be a subset of {POLICY_TYPES}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        current_stats, headcount, source = None, None, "local analytical store"
+        if request.data.get("use_live"):
+            try:
+                live = CoreHRClient(request.auth).get_live_stats()
+            except ServiceError as exc:
+                return Response(
+                    {"detail": f"core-hr unavailable: {exc}"},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+            current_stats = {"turnover": live["turnover"],
+                             "performance": live["performance"]}
+            headcount = live["headcount"]
+            source = live["source"]
+
+        from .optimizer import optimize_portfolio
+
+        portfolio = optimize_portfolio(
+            budget, magnitude, candidates,
+            current_stats=current_stats, headcount=headcount,
+        )
+        portfolio["data_source"] = source
+        return Response(portfolio)

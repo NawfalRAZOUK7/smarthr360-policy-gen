@@ -209,3 +209,101 @@ class LiveWiringTests(PolicyGenTests.__bases__[0]):
         resp = self.client.get("/api/policy/analytics/", **bearer())
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["source"], "local analytical store")
+
+
+class SimulationPersistenceAndOptimizerTests(PolicyGenTests.__bases__[0]):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._s3 = override_settings(
+            SMARTHR_JWT_AUTH={"PUBLIC_KEY": PUBLIC_PEM, "ISSUER": "smarthr360"}
+        )
+        cls._s3.enable()
+        conf.clear_cache()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._s3.disable()
+        conf.clear_cache()
+        super().tearDownClass()
+
+    def setUp(self):
+        DemoDataService.reset_and_populate()
+
+    def test_simulations_are_persisted_and_listable(self):
+        from policies.models import SimulationRun
+
+        resp = self.client.post(
+            "/api/policy/simulate/",
+            {"policy_type": "remote_work", "magnitude": 5},
+            content_type="application/json", **bearer(),
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIn("simulation_id", resp.json())
+        self.assertEqual(SimulationRun.objects.count(), 1)
+        run = SimulationRun.objects.get()
+        self.assertEqual(run.scenario["policy_type"], "remote_work")
+        self.assertEqual(run.scenario["requested_by_user_id"], 1)
+
+        history = self.client.get("/api/policy/simulations/", **bearer())
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual(history.json()["count"], 1)
+
+    def test_optimizer_respects_budget_and_prefers_free_policies(self):
+        resp = self.client.post(
+            "/api/policy/optimize/",
+            {"budget": 400000, "magnitude": 5},
+            content_type="application/json", **bearer(),
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+
+        selected = {e["policy_type"] for e in body["selected"]}
+        # zero-cost policies always in
+        self.assertIn("flexible_hours", selected)
+        self.assertIn("mentorship", selected)
+        # budget respected
+        self.assertLessEqual(body["budget_used"], 400000)
+        self.assertGreaterEqual(body["budget_remaining"], 0)
+        # everything is either selected or rejected with a reason
+        total = len(body["selected"]) + len(body["rejected"])
+        self.assertEqual(total, 6)
+        for entry in body["selected"] + body["rejected"]:
+            self.assertTrue(entry["reason"])
+        # portfolio improves indicators
+        self.assertLess(body["expected_turnover_change"], 0)
+
+    def test_optimizer_zero_budget_still_selects_free_policies(self):
+        body = self.client.post(
+            "/api/policy/optimize/", {"budget": 0},
+            content_type="application/json", **bearer(),
+        ).json()
+        self.assertEqual(
+            {e["policy_type"] for e in body["selected"]},
+            {"flexible_hours", "mentorship"},
+        )
+        self.assertEqual(body["budget_used"], 0)
+
+    def test_optimizer_validation_and_gate(self):
+        self.assertEqual(
+            self.client.post(
+                "/api/policy/optimize/", {"budget": -5},
+                content_type="application/json", **bearer(),
+            ).status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/policy/optimize/",
+                {"budget": 1000, "policies": ["yachts"]},
+                content_type="application/json", **bearer(),
+            ).status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/policy/optimize/", {"budget": 1000},
+                content_type="application/json", **bearer(9, "EMPLOYEE"),
+            ).status_code,
+            403,
+        )
