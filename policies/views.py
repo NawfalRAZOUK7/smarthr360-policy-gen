@@ -14,6 +14,8 @@ from rest_framework.views import APIView
 from smarthr360_jwt_auth.access import has_hr_access
 
 from .clients import CoreHRClient, ServiceError
+from .metrics import record_comparison, record_simulation
+from .services.comparison import compare_policies
 from .services.policy import (
     DemoDataService,
     HRAnalyticsService,
@@ -125,6 +127,7 @@ class SimulateView(APIView):
             policy_type, magnitude,
             current_stats=current_stats, headcount=headcount,
         )
+        record_simulation(policy_type)
 
         # persist for later comparison (uses the rescued SimulationRun)
         from .models import SimulationRun
@@ -148,6 +151,57 @@ class SimulateView(APIView):
                 "data_source": source,
             }
         )
+
+
+class ComparePoliciesView(APIView):
+    """POST /api/policy/compare/ {policies:[{policy_type,magnitude}], use_live?}
+
+    Head-to-head A/B comparison: ranks the given policies by value (turnover
+    reduction + performance gain), and flags the most cost-efficient. Distinct
+    from /optimize/ (budget-constrained portfolio selection).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        _require_hr(request)
+        specs = request.data.get("policies")
+        if not isinstance(specs, list) or len(specs) < 2:
+            return Response(
+                {"detail": "policies must be a list of at least 2 entries."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        for spec in specs:
+            if not isinstance(spec, dict) or spec.get("policy_type") not in POLICY_TYPES:
+                return Response(
+                    {"detail": f"each policy_type must be one of {POLICY_TYPES}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # optional cross-service mode: evaluate all options against LIVE core-hr
+        current_stats, headcount, source = None, None, "local analytical store"
+        if request.data.get("use_live"):
+            try:
+                live = CoreHRClient(request.auth).get_live_stats()
+            except ServiceError as exc:
+                return Response(
+                    {"detail": f"core-hr unavailable: {exc}"},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+            current_stats = {"turnover": live["turnover"], "performance": live["performance"]}
+            headcount = live["headcount"]
+            source = live["source"]
+
+        def simulate_fn(policy_type, magnitude):
+            return PolicySimulatorService.simulate_policy_impact(
+                policy_type, magnitude,
+                current_stats=current_stats, headcount=headcount,
+            )
+
+        result = compare_policies(specs, simulate_fn)
+        record_comparison()
+        result["data_source"] = source
+        return Response(result)
 
 
 class RecommendationsView(APIView):
