@@ -13,6 +13,10 @@ psycopg2-binary>=2.9,<3.0
 # Shared platform JWT client — vendored wheel (built from smarthr360-platform/packages/smarthr360-jwt-auth).
 ./smarthr360_jwt_auth-1.1.1-py3-none-any.whl
 
+# Shared enterprise-integration toolkit (observability, API envelope) —
+# vendored wheel built from smarthr360-platform/packages/smarthr360-integration.
+./smarthr360_integration-0.1.0-py3-none-any.whl
+
 # LLM recommendations (optional: static fallback without it)
 groq>=0.9
 python-dotenv>=1.0
