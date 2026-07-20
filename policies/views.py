@@ -234,7 +234,25 @@ class ApplyPolicyView(APIView):
             )
         magnitude = float(request.data.get("magnitude", 0))
         impact = PolicySimulatorService.apply_policy(policy_type, magnitude)
-        return Response({"applied": policy_type, "impact": impact})
+
+        # persist the applied policy so its real-world outcome can be tracked
+        # later (loop-closer: simulated impact -> applied -> measured result).
+        from .models import SimulationRun
+
+        run = SimulationRun.objects.create(
+            scenario={
+                "policy_type": policy_type,
+                "magnitude": magnitude,
+                "applied": True,
+                "applied_by_user_id": request.user.id,
+                "source_simulation_id": request.data.get("simulation_id"),
+            },
+            result={"predicted": impact, "outcome": None},
+        )
+
+        return Response(
+            {"applied": policy_type, "impact": impact, "applied_id": str(run.id)}
+        )
 
 
 class ResetDemoDataView(APIView):
